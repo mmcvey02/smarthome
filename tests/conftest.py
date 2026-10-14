@@ -13,6 +13,7 @@ CONFIG = {
     "temperature_unit": "F",
     "location": {"latitude": 40.71, "longitude": -74.0, "timezone": "America/New_York"},
     "integrations": [{"type": "demo", "id": "demo"}],
+    "weather": {"enabled": False},  # tests that need weather stub the fetch
 }
 
 

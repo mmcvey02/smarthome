@@ -14,9 +14,10 @@ from pydantic import TypeAdapter
 from .. import models as m
 from ..models import Device
 from .models import (
-    WEEKDAYS, CommandAction, CurveRoutine, DelayAction, DeviceTrigger, EventRoutine, FadeAction,
-    Routine, RunRoutineAction, SetAction, Target, TimeTrigger,
+    WEEKDAYS, AutoRoutine, CommandAction, CurveRoutine, DelayAction, DeviceTrigger, EventRoutine, FadeAction,
+    Routine, RunRoutineAction, SetAction, Target, TimeTrigger, WeatherTrigger,
 )
+from .auto import AutoRunner
 from .timespec import Clock
 
 if TYPE_CHECKING:
@@ -24,7 +25,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-RoutineAdapter: TypeAdapter[EventRoutine | CurveRoutine] = TypeAdapter(Routine)
+AnyRoutine = EventRoutine | CurveRoutine | AutoRoutine
+RoutineAdapter: TypeAdapter[AnyRoutine] = TypeAdapter(Routine)
 
 TICK_SECONDS = 15
 # A time trigger still fires if the hub notices it up to this late (e.g. after a hiccup),
@@ -33,6 +35,8 @@ TRIGGER_GRACE = timedelta(minutes=3)
 # Don't bother devices (and cloud APIs) with changes smaller than this.
 MIN_BRIGHTNESS_STEP = 1
 MIN_KELVIN_STEP = 50
+# How often automatic routines re-evaluate (they also run on every weather update).
+AUTO_EVERY = timedelta(minutes=5)
 
 
 def curve_value(points: list[Any], clock: Clock, now: datetime) -> tuple[dict[str, int], date] | None:
@@ -85,13 +89,15 @@ class RoutineEngine:
     def __init__(self, hub: Hub, path: Path):
         self.hub = hub
         self.path = path
-        self.routines: dict[str, EventRoutine | CurveRoutine] = {}
+        self.routines: dict[str, AnyRoutine] = {}
         self.last_run: dict[str, str] = {}
         self._fired: set[tuple[str, int, date]] = set()
         self._curve_last: dict[str, datetime] = {}
         self._running: dict[str, asyncio.Task[None]] = {}
         self._background: set[asyncio.Task[None]] = set()
         self._task: asyncio.Task[None] | None = None
+        self._weather_prev: dict[tuple[str, int], bool | None] = {}
+        self.auto = AutoRunner(self)
 
     @property
     def clock(self) -> Clock:
@@ -115,9 +121,10 @@ class RoutineEngine:
         tmp.write_text(json.dumps([r.model_dump(mode="json") for r in self.routines.values()], indent=2))
         tmp.replace(self.path)
 
-    def upsert(self, routine: EventRoutine | CurveRoutine) -> None:
+    def upsert(self, routine: AnyRoutine) -> None:
         self.routines[routine.id] = routine
         self._curve_last.pop(routine.id, None)
+        self.auto.forget(routine.id)
         self.save()
 
     def delete(self, routine_id: str) -> None:
@@ -156,6 +163,9 @@ class RoutineEngine:
                     if fire_at <= now < fire_at + TRIGGER_GRACE and key not in self._fired:
                         self._fired.add(key)
                         self.trigger(r, f"time {trig.at}")
+            elif isinstance(r, AutoRoutine):
+                if self.auto.due(r, now, AUTO_EVERY):
+                    await self.auto.apply(r, now)
             else:
                 last = self._curve_last.get(r.id)
                 if last is None or now - last >= timedelta(minutes=r.step_minutes):
@@ -174,21 +184,48 @@ class RoutineEngine:
                             and old.get(trig.attribute) != device.state.get(trig.attribute)
                             and (trig.to is None or device.state.get(trig.attribute) == trig.to)):
                         self.trigger(r, f"{device.name} {trig.attribute} -> {device.state.get(trig.attribute)}")
-            elif (device.kind == "light" and not old.get("on") and device.state.get("on")
+            elif (isinstance(r, CurveRoutine) and device.kind == "light" and not old.get("on") and device.state.get("on")
                   and not self.hub.routine_changed_within(device.id, 10)
                   and target_matches(r.target, device)):
                 # Someone switched a light on: put it straight onto the curve instead of
                 # full brightness. (Lights a routine turns on, e.g. a wake-up fade, are left alone.)
-                task = asyncio.create_task(self.apply_curve(r, self.clock.now(), only=device, ignore_override=True))
-                self._background.add(task)
-                task.add_done_callback(self._background.discard)
+                self._spawn(self.apply_curve(r, self.clock.now(), only=device, ignore_override=True))
 
     # ---- running -----------------------------------------------------------
+
+    def on_weather_update(self) -> None:
+        """New weather arrived: fire weather triggers that just became true, re-run automatics."""
+        metrics = self.hub.weather.metrics() if self.hub.weather else {}
+        for r in list(self.routines.values()):
+            if not r.enabled:
+                continue
+            if isinstance(r, EventRoutine):
+                for i, trig in enumerate(r.triggers):
+                    if isinstance(trig, WeatherTrigger):
+                        now_holds = trig.holds(metrics)
+                        before = self._weather_prev.get((r.id, i))
+                        self._weather_prev[(r.id, i)] = now_holds
+                        # Fire on a false -> true edge; the first reading after startup only sets a baseline.
+                        if now_holds and before is False:
+                            self.trigger(r, f"weather {trig.metric} {trig.op} {trig.value}")
+            elif isinstance(r, AutoRoutine):
+                self._spawn(self.auto.apply(r, self.clock.now()))
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     def conditions_met(self, r: EventRoutine, now: datetime) -> bool:
         if WEEKDAYS[now.weekday()] not in r.days:
             return False
-        return r.between is None or in_window(self.clock, r.between, now)
+        if r.between is not None and not in_window(self.clock, r.between, now):
+            return False
+        if r.weather:
+            # A check we can't make (no weather data) counts as not met.
+            metrics = self.hub.weather.metrics() if self.hub.weather else {}
+            return all(check.holds(metrics) for check in r.weather)
+        return True
 
     def trigger(self, r: EventRoutine, reason: str) -> None:
         if not self.conditions_met(r, self.clock.now()):
@@ -196,13 +233,15 @@ class RoutineEngine:
             return
         self.run(r, reason)
 
-    def run(self, r: EventRoutine | CurveRoutine, reason: str = "manual") -> None:
+    def run(self, r: AnyRoutine, reason: str = "manual") -> None:
         """Start a routine now, ignoring its conditions. Re-running restarts it."""
         self.cancel(r.id)
         log.info("running routine %s (%s)", r.id, reason)
         self.last_run[r.id] = f"{self.clock.now().isoformat(timespec='seconds')} ({reason})"
         if isinstance(r, CurveRoutine):
             coro = self.apply_curve(r, self.clock.now(), ignore_override=True, force=True)
+        elif isinstance(r, AutoRoutine):
+            coro = self.auto.apply(r, self.clock.now(), force=True)
         else:
             coro = self._run_actions(r)
         task = asyncio.create_task(coro)
@@ -240,6 +279,8 @@ class RoutineEngine:
                 log.warning("cannot run sub-routine %s", action.routine)
             elif isinstance(sub, EventRoutine):
                 await self._run_actions(sub, depth + 1)
+            elif isinstance(sub, AutoRoutine):
+                await self.auto.apply(sub, self.clock.now(), force=True)
             else:
                 await self.apply_curve(sub, self.clock.now(), ignore_override=True, force=True)
 

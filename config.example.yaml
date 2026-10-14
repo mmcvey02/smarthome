@@ -2,11 +2,18 @@
 
 temperature_unit: F          # F or C, used everywhere in the dashboard and routines
 
-# Needed for sunrise/sunset routines. Without it the hub assumes 6:30 / 18:30.
-location:
-  latitude: 40.71
-  longitude: -74.00
-  timezone: America/New_York
+# Where the house is, for sunrise/sunset and weather. Leave as `auto` to look it up
+# (city-level) from your internet connection, give exact coordinates, or `off`.
+location: auto
+# location:
+#   latitude: 40.71
+#   longitude: -74.00
+#   timezone: America/New_York
+
+# Live weather from Open-Meteo (free, no account or API key needed).
+weather:
+  enabled: true
+  refresh_minutes: 15
 
 # Optional: require this password (any username) to open the dashboard.
 # Recommended if anyone else uses your network.

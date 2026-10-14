@@ -75,6 +75,17 @@ const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const MODES = ["auto", "cool", "heat", "dry", "fan"];
 const FANS = ["auto", "silent", "low", "medium", "high", "max"];
 const VACUUM_CMDS = ["start", "pause", "resume", "stop", "dock"];
+const CONDITIONS = ["clear", "partly_cloudy", "cloudy", "fog", "rain", "snow", "storm"];
+const WEATHER_ICONS = { clear: "☀️", partly_cloudy: "⛅", cloudy: "☁️", fog: "🌫️", rain: "🌧️", snow: "🌨️", storm: "⛈️" };
+const weatherIcon = (cond, isDay = true) => (cond === "clear" && !isDay ? "🌙" : WEATHER_ICONS[cond] || "🌡️");
+const conditionLabel = c => (c || "").replace("_", " ");
+const DEFAULT_METRIC_LABELS = {
+  temperature: "Outdoor temperature", feels_like: "Feels-like temperature", humidity: "Humidity %",
+  cloud_cover: "Cloud cover %", precipitation: "Precipitation now", wind_speed: "Wind speed", uv_index: "UV index",
+  rain_chance: "Today's rain chance %", today_high: "Today's high", today_low: "Today's low", condition: "Condition",
+};
+const metricLabels = () => state.weather?.metric_labels || DEFAULT_METRIC_LABELS;
+const OP_LABELS = { above: "is above", below: "is below", is: "is", is_not: "is not" };
 
 // ---------------------------------------------------------------- state
 
@@ -83,6 +94,7 @@ const state = {
   devices: new Map(),
   routines: [],
   roomFilter: localGet("roomFilter") || "All",
+  weather: null,
 };
 
 function localGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -305,13 +317,30 @@ function describeDays(days) {
   return days.map(d => d[0].toUpperCase() + d.slice(1)).join(" ");
 }
 
+function describeCheck(c) {
+  const label = (metricLabels()[c.metric] || c.metric).replace(/ %$/, "").toLowerCase();
+  const value = c.metric === "condition" ? conditionLabel(c.value) : c.value;
+  return `${label} ${OP_LABELS[c.op] || c.op} ${value}`;
+}
+
 function describeRoutine(r) {
+  if (r.kind === "auto") {
+    const parts = [];
+    if (r.lighting) {
+      const what = [r.lighting.dusk_on && "on at dusk", r.lighting.gloomy_day && "on gloomy days"].filter(Boolean);
+      parts.push(`${describeTarget(r.lighting.target)} ${what.join(" & ") || "(nothing enabled)"}`);
+    }
+    if (r.climate) parts.push(`${describeTarget(r.climate.target)} kept ${r.climate.comfort_low}–${r.climate.comfort_high}°`);
+    return `${parts.join(" · ")} · ${describeDays(r.days)}`;
+  }
   if (r.kind === "curve") {
     return `${describeTarget(r.target)} · ${r.points[0].at} → ${r.points[r.points.length - 1].at} · ${describeDays(r.days)}`;
   }
   const trig = r.triggers.map(t => t.type === "time" ? `at ${t.at}`
+    : t.type === "weather" ? `when ${describeCheck(t)}`
     : `when ${state.devices.get(t.device)?.name || t.device} ${t.attribute}${t.to !== null && t.to !== undefined ? ` → ${t.to}` : " changes"}`);
-  const when = trig.length ? `${trig.join(" or ")} · ${describeDays(r.days)}` : "Run manually";
+  let when = trig.length ? `${trig.join(" or ")} · ${describeDays(r.days)}` : "Run manually";
+  if (r.weather?.length) when += ` · only if ${r.weather.map(describeCheck).join(" and ")}`;
   const steps = r.actions.map(a => ({
     set: () => `set ${describeTarget(a.target)}`,
     command: () => `${a.command} ${describeTarget(a.target)}`,
@@ -331,10 +360,12 @@ function renderRoutines() {
   list.replaceChildren(...state.routines.map(r => h("div", { class: "routine" + (r.enabled ? "" : " disabled") },
     h("div", { class: "routine-main" },
       h("div", { class: "routine-name" }, r.name,
-        h("span", { class: "badge " + r.kind }, r.kind === "curve" ? "curve" : r.triggers.length ? "routine" : "scene"),
+        h("span", { class: "badge " + r.kind },
+          r.kind === "curve" ? "curve" : r.kind === "auto" ? "automatic" : r.triggers.length ? "routine" : "scene"),
         r.running ? h("span", { class: "badge running" }, "running") : null),
       h("div", { class: "routine-summary" }, describeRoutine(r)),
       r.description ? h("div", { class: "routine-summary" }, r.description) : null,
+      r.explain?.length && r.enabled ? h("ul", { class: "explain" }, r.explain.map(line => h("li", {}, line))) : null,
       r.last_run ? h("div", { class: "routine-summary" },
         `Last run ${r.last_run.replace("T", " ").replace(/:\d\d[+-]\d\d:\d\d/, "")}`) : null),
     r.kind === "curve" ? miniCurve(r) : null,
@@ -344,14 +375,14 @@ function renderRoutines() {
         h("span")),
       r.running
         ? h("button", { class: "btn small", onclick: () => api("POST", `/api/routines/${r.id}/stop`).then(loadRoutines) }, "Stop")
-        : h("button", { class: "btn small", onclick: () => runRoutine(r) }, r.kind === "curve" ? "Apply now" : "Run"),
+        : h("button", { class: "btn small", onclick: () => runRoutine(r) }, r.kind === "event" ? "Run" : "Apply now"),
       h("button", { class: "btn small", onclick: () => openEditor(stripMeta(r), r.id) }, "Edit"),
       h("button", { class: "btn small danger", onclick: () => deleteRoutine(r) }, "Delete")),
   )));
 }
 
 function stripMeta(r) {
-  const { last_run, running, ...rest } = r;
+  const { last_run, running, explain, ...rest } = r;
   return clone(rest);
 }
 
@@ -458,11 +489,30 @@ const TEMPLATES = {
     ],
     only_when_on: true, manual_override_minutes: 60, step_minutes: 2,
   }),
+  auto: () => ({
+    kind: "auto", id: "", name: "Automatic lights & climate", enabled: true, days: [...DAYS], description: "",
+    lighting: AUTO_LIGHTING(),
+    climate: AUTO_CLIMATE(),
+  }),
   event: () => ({
     kind: "event", id: "", name: "", enabled: true, days: [...DAYS], description: "",
     triggers: [{ type: "time", at: "07:00" }], between: null,
     actions: [{ type: "set", target: { kinds: ["light"], rooms: [], devices: [], all: false }, state: { on: true } }],
   }),
+};
+
+const AUTO_LIGHTING = () => ({
+  target: { kinds: ["light"], rooms: [], devices: [], all: false },
+  dusk_on: true, dusk_offset_minutes: -15, cloudy_extra_minutes: 45,
+  gloomy_day: true, gloomy_cloud_cover: 90, brightness: null, latest_on: "22:00",
+});
+const AUTO_CLIMATE = () => {
+  const f = unit() === "°F";
+  return {
+    target: { kinds: ["climate"], rooms: [], devices: [], all: false },
+    comfort_low: f ? 68 : 20, comfort_high: f ? 76 : 24.5, mild_action: "off", dehumidify_above: null,
+    only_when_on: false, manual_override_minutes: 120, min_change_minutes: 20,
+  };
 };
 
 const ACTION_TEMPLATES = {
@@ -497,7 +547,8 @@ function openEditor(routine, existingId) {
   editor.routine = routine;
   editor.existingId = existingId;
   editor.jsonMode = false;
-  $("#editor-title").textContent = (existingId ? "Edit " : "New ") + (routine.kind === "curve" ? "lighting curve" : "routine");
+  $("#editor-title").textContent = (existingId ? "Edit " : "New ") +
+    ({ curve: "lighting curve", auto: "automatic routine" }[routine.kind] || "routine");
   $("#editor-errors").textContent = "";
   $("#editor-json").classList.add("hidden");
   $("#editor-body").classList.remove("hidden");
@@ -593,8 +644,10 @@ function renderEditor() {
     field("Description", textInput(r, "description", { placeholder: "Optional" })),
     field("Days", daysPicker(r)),
   ];
-  body.replaceChildren(...common, ...(r.kind === "curve" ? curveEditor(r) : eventEditor(r)));
+  const specific = { curve: curveEditor, auto: autoEditor }[r.kind] || eventEditor;
+  body.replaceChildren(...common, ...specific(r));
   if (r.kind === "curve") schedulePreview();
+  if (r.kind === "auto") scheduleExplain();
 }
 
 // ---- curve editor
@@ -665,14 +718,18 @@ function eventEditor(r) {
   const renderTriggers = () => triggers.replaceChildren(...r.triggers.map((t, i) => {
     const typeSel = h("select", { onchange: e => {
       r.triggers[i] = e.target.value === "time" ? { type: "time", at: "07:00" }
+        : e.target.value === "weather" ? { type: "weather", metric: "condition", op: "is", value: "rain" }
         : { type: "device", device: devicesSorted()[0]?.id || "", attribute: "on", to: true };
       renderTriggers();
     } }, h("option", { value: "time", selected: t.type === "time" }, "At a time"),
-       h("option", { value: "device", selected: t.type === "device" }, "When a device changes"));
+       h("option", { value: "device", selected: t.type === "device" }, "When a device changes"),
+       h("option", { value: "weather", selected: t.type === "weather" }, "When the weather"));
     const remove = h("button", { type: "button", class: "btn small ghost", onclick: () => { r.triggers.splice(i, 1); renderTriggers(); } }, "✕");
     let fields;
     if (t.type === "time") {
       fields = [textInput(t, "at", { placeholder: "07:00 or sunset-30" })];
+    } else if (t.type === "weather") {
+      fields = weatherCheckFields(t, renderTriggers);
     } else {
       fields = [
         h("select", { onchange: e => { t.device = e.target.value; } },
@@ -691,6 +748,13 @@ function eventEditor(r) {
   renderTriggers();
   renderActions();
 
+  r.weather = r.weather || [];
+  const checks = h("div");
+  const renderChecks = () => checks.replaceChildren(...r.weather.map((c, i) => h("div", { class: "block" },
+    h("div", { class: "block-head" }, ...weatherCheckFields(c, renderChecks), h("div", { class: "spacer" }),
+      h("button", { type: "button", class: "btn small ghost", onclick: () => { r.weather.splice(i, 1); renderChecks(); } }, "✕")))));
+  renderChecks();
+
   const between = r.between || ["", ""];
   const setBetween = () => { r.between = between[0] && between[1] ? [between[0], between[1]] : null; };
 
@@ -705,11 +769,113 @@ function eventEditor(r) {
       h("span", { class: "muted" }, "and"),
       h("input", { type: "text", value: between[1], placeholder: "23:00", oninput: e => { between[1] = e.target.value; setBetween(); } })),
       "Useful with device triggers, e.g. only turn the hall light on when the door opens after dark."),
+    field("Only if the weather… (optional)", h("div", {}, checks,
+      h("button", { type: "button", class: "btn small", style: "margin-top:8px", onclick: () => {
+        r.weather.push({ metric: "condition", op: "is_not", value: "rain" }); renderChecks();
+      } }, "+ Weather condition")),
+      `Uses live weather for your location${state.weather?.location?.city ? ` (${state.weather.location.city})` : ""}. ` +
+      "If weather can't be fetched, these count as not met."),
     field("Steps (run in order)", h("div", {}, actions,
       h("div", { class: "inline", style: "margin-top:8px" },
         ...Object.keys(ACTION_TEMPLATES).map(type => h("button", { type: "button", class: "btn small",
           onclick: () => { r.actions.push(ACTION_TEMPLATES[type]()); renderActions(); } }, `+ ${actionLabel(type)}`))))),
   ];
+}
+
+function weatherCheckFields(c, rerender) {
+  const isCond = c.metric === "condition";
+  const metricSel = h("select", { onchange: e => {
+    const wasCond = c.metric === "condition";
+    c.metric = e.target.value;
+    if (c.metric === "condition" && !wasCond) { c.op = "is"; c.value = "rain"; }
+    if (c.metric !== "condition" && wasCond) { c.op = "above"; c.value = 0; }
+    rerender();
+  } }, Object.entries(metricLabels()).map(([k, label]) => h("option", { value: k, selected: c.metric === k }, label)));
+  const ops = isCond ? ["is", "is_not"] : ["above", "below"];
+  const opSel = h("select", { onchange: e => { c.op = e.target.value; } },
+    ops.map(o => h("option", { value: o, selected: c.op === o }, OP_LABELS[o])));
+  const valueEl = isCond
+    ? h("select", { onchange: e => { c.value = e.target.value; } },
+        CONDITIONS.map(x => h("option", { value: x, selected: c.value === x }, `${WEATHER_ICONS[x]} ${conditionLabel(x)}`)))
+    : numInput(c, "value", { step: "any", style: "width:80px" });
+  const now = state.weather?.metrics?.[c.metric];
+  return [metricSel, opSel, valueEl,
+    now !== undefined && now !== null ? h("span", { class: "hint" }, `now: ${isCond ? conditionLabel(now) : now}`) : null];
+}
+
+// ---- automatic editor
+
+function autoEditor(r) {
+  const section = (key, title, make, render) => {
+    const box = h("div", { class: "block" });
+    const draw = () => {
+      box.replaceChildren(
+        h("label", { class: "checkbox" }, h("input", { type: "checkbox", checked: !!r[key], onchange: e => {
+          r[key] = e.target.checked ? make() : null; draw(); scheduleExplain();
+        } }), h("b", {}, title)),
+        ...(r[key] ? render(r[key]) : []));
+    };
+    draw();
+    return box;
+  };
+  const upd = scheduleExplain;
+  const nullableNum = (obj, key, attrs) => numInput(obj, key, attrs, upd);
+  const explainBox = h("ul", { class: "explain", id: "auto-explain" });
+  return [
+    field("Right now", explainBox, state.weather?.data
+      ? `${weatherIcon(state.weather.data.current.condition, state.weather.data.current.is_day)} ` +
+        `${state.weather.data.current.description}, ${state.weather.data.current.temperature}${unit()}, ` +
+        `${state.weather.data.current.cloud_cover}% cloud, ${state.weather.data.current.humidity}% humidity`
+      : "Weather isn't available yet; lighting will follow the sun alone."),
+    section("lighting", "Automatic lighting", AUTO_LIGHTING, L => [
+      targetPicker(L.target),
+      h("label", { class: "checkbox" }, h("input", { type: "checkbox", checked: L.dusk_on,
+        onchange: e => { L.dusk_on = e.target.checked; upd(); } }), "Turn lights on when it gets dark"),
+      h("div", { class: "inline" }, "At sunset", nullableNum(L, "dusk_offset_minutes", { min: -180, max: 180 }),
+        "min, up to", nullableNum(L, "cloudy_extra_minutes", { min: 0, max: 180 }), "min earlier when overcast"),
+      h("label", { class: "checkbox" }, h("input", { type: "checkbox", checked: L.gloomy_day,
+        onchange: e => { L.gloomy_day = e.target.checked; upd(); } }),
+        "Turn lights on during gloomy days (rain, storms, fog, heavy cloud), off when it clears"),
+      h("div", { class: "inline" }, "Gloomy at", nullableNum(L, "gloomy_cloud_cover", { min: 0, max: 100 }), "% cloud cover"),
+      h("div", { class: "inline" }, "Brightness", nullableNum(L, "brightness", { min: 1, max: 100, placeholder: "auto" }),
+        "% · never switch on after", textInput(L, "latest_on", { style: "width:90px" }, upd)),
+      h("div", { class: "hint" }, "Leave brightness blank to let a lighting curve (like Evening wind-down) set the level."),
+    ]),
+    section("climate", "Automatic climate", AUTO_CLIMATE, C => [
+      targetPicker(C.target),
+      h("div", { class: "inline" }, "Keep it between", nullableNum(C, "comfort_low", { step: 0.5 }), "and",
+        nullableNum(C, "comfort_high", { step: 0.5 }), unit()),
+      h("div", { class: "inline" }, "When it's comfortable",
+        h("select", { onchange: e => { C.mild_action = e.target.value; upd(); } },
+          [["off", "turn units off"], ["fan", "run fan only"], ["leave", "leave them as they are"]]
+            .map(([v, t]) => h("option", { value: v, selected: C.mild_action === v }, t)))),
+      h("div", { class: "inline" }, "Dehumidify (dry mode) when outdoor humidity is above",
+        nullableNum(C, "dehumidify_above", { min: 30, max: 100, placeholder: "never" }), "%"),
+      h("label", { class: "checkbox" }, h("input", { type: "checkbox", checked: C.only_when_on,
+        onchange: e => { C.only_when_on = e.target.checked; upd(); } }), "Only adjust units that are already running (never switch on/off)"),
+      h("div", { class: "inline" }, "After a manual change, leave a unit alone for",
+        nullableNum(C, "manual_override_minutes", { min: 0 }), "min"),
+      h("div", { class: "inline" }, "Change modes at most every", nullableNum(C, "min_change_minutes", { min: 5 }), "min"),
+      h("div", { class: "hint" }, "Uses each unit's indoor temperature when it reports one, otherwise the outdoor " +
+        "temperature, and keeps cooling/heating going on hot or cold days."),
+    ]),
+  ];
+}
+
+function scheduleExplain() {
+  clearTimeout(editor.previewTimer);
+  editor.previewTimer = setTimeout(async () => {
+    const box = $("#auto-explain");
+    if (!box) return;
+    try {
+      const lines = await api("POST", "/api/auto/explain", editor.routine);
+      box.replaceChildren(...lines.map(l => h("li", {}, l)));
+      $("#editor-errors").textContent = "";
+    } catch (e) {
+      box.replaceChildren();
+      $("#editor-errors").textContent = e.message;
+    }
+  }, 300);
 }
 
 function actionLabel(type) {
@@ -794,6 +960,23 @@ function renderSettings() {
     st.location_configured ? null : h("p", { class: "muted" },
       "Tip: add your location to config.yaml so sunrise/sunset times are accurate (currently using 6:30 / 18:30)."));
 
+  const w = state.weather;
+  const loc = w?.location;
+  $("#weather-settings").replaceChildren(h("div", { class: "integration" },
+    h("span", { class: "dot" + (w?.error ? " err" : "") }),
+    h("b", {}, "Weather"),
+    h("span", { class: "muted" }, loc
+      ? `${[loc.city, loc.region].filter(Boolean).join(", ") || `${loc.latitude}, ${loc.longitude}`} · ${loc.timezone} · ` +
+        (loc.source === "ip" ? "detected from your internet connection" : "from config.yaml")
+      : "no location"),
+    h("div", { class: "spacer" }),
+    w?.error ? h("span", { class: "errors", style: "padding:0" }, w.error)
+      : h("span", { class: "muted" }, w?.data ? `Open-Meteo · updated ${fmtTime(w.data.updated)}` : "waiting for first update"),
+    w?.enabled ? h("button", { class: "btn small", onclick: async () => {
+      try { state.weather = await api("POST", "/api/weather/refresh"); renderWeather(); renderSettings(); }
+      catch (e) { toast(e.message, true); }
+    } }, "Refresh") : null));
+
   const roomList = h("datalist", { id: "room-options" }, rooms().map(r => h("option", { value: r })));
   $("#device-settings").replaceChildren(roomList, ...devicesSorted().map(d => {
     const name = h("input", { type: "text", value: d.name });
@@ -825,6 +1008,64 @@ function renderClock() {
   if (st) $("#clock-sun").textContent = `☀ ${fmt(new Date(st.sun.sunrise))}  ☾ ${fmt(new Date(st.sun.sunset))}`;
 }
 
+function fmtTime(iso, opts = {}) {
+  if (!iso) return "–";
+  return new Date(iso).toLocaleTimeString([], { timeZone: state.status?.timezone, hour: "numeric", minute: "2-digit", ...opts });
+}
+
+function renderWeather() {
+  const w = state.weather;
+  const panel = $("#weather-panel");
+  const chip = $("#clock-weather");
+  const d = w?.data;
+  if (!d) {
+    chip.textContent = "";
+    panel.replaceChildren(w?.error ? h("div", { class: "weather card muted" }, `🌡️ ${w.error}`) : "");
+    return;
+  }
+  const c = d.current, t = d.today || {};
+  const deg = v => (v === null || v === undefined ? "–" : `${Math.round(v)}°`);
+  chip.textContent = `${weatherIcon(c.condition, c.is_day)} ${deg(c.temperature)}`;
+  chip.title = c.description;
+  const loc = w.location;
+  const place = loc ? [loc.city, loc.region].filter(Boolean).join(", ") : "";
+  const stat = (label, value) => h("div", { class: "wstat" }, h("span", { class: "muted" }, label), h("b", {}, value));
+  const day = (x, i) => h("div", { class: "wday" },
+    h("div", { class: "muted" }, i === 0 ? "Today" : new Date(x.date + "T12:00").toLocaleDateString([], { weekday: "short" })),
+    h("div", { class: "wicon" }, weatherIcon(x.condition)),
+    h("div", {}, h("b", {}, deg(x.high)), " ", h("span", { class: "muted" }, deg(x.low))),
+    x.rain_chance ? h("div", { class: "wrain" }, `💧${x.rain_chance}%`) : null);
+  const isDayAt = iso => {
+    const day = d.days.find(x => x.date === iso.slice(0, 10));
+    return !day || (iso >= day.sunrise && iso < day.sunset);
+  };
+  const hours = d.hours.filter((_, i) => i % 3 === 0).slice(0, 8).map(x => h("div", { class: "whour" },
+    h("div", { class: "muted" }, fmtTime(x.time, { minute: undefined })),
+    h("div", { class: "wicon small-icon" }, weatherIcon(x.condition, isDayAt(x.time))),
+    h("b", {}, deg(x.temperature)),
+    x.rain_chance ? h("div", { class: "wrain" }, `${x.rain_chance}%`) : null));
+  panel.replaceChildren(h("div", { class: "weather card" + (w.stale ? " stale" : "") },
+    h("div", { class: "wnow" },
+      h("div", { class: "wbig" }, weatherIcon(c.condition, c.is_day)),
+      h("div", {},
+        h("div", { class: "wtemp" }, deg(c.temperature)),
+        h("div", {}, c.description),
+        h("div", { class: "muted small" }, [place, w.stale ? "not updated recently" : `updated ${fmtTime(d.updated)}`]
+          .filter(Boolean).join(" · "))),
+      h("div", { class: "wstats" },
+        stat("Feels like", deg(c.feels_like)),
+        stat("High / low", `${deg(t.high)} / ${deg(t.low)}`),
+        stat("Humidity", `${c.humidity ?? "–"}%`),
+        stat("Clouds", `${c.cloud_cover ?? "–"}%`),
+        stat("Rain chance", `${t.rain_chance ?? "–"}%`),
+        stat("Wind", `${c.wind_speed ?? "–"} ${unit() === "°F" ? "mph" : "km/h"}`),
+        stat("UV", `${c.uv_index ?? "–"}`),
+        stat("Sunrise", fmtTime(t.sunrise)),
+        stat("Sunset", fmtTime(t.sunset)))),
+    h("div", { class: "wstrip" }, hours),
+    h("div", { class: "wstrip days" }, d.days.map(day))));
+}
+
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws`);
   let ping;
@@ -832,14 +1073,22 @@ function connect() {
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === "device") upsertDevice(msg.device);
+    if (msg.type === "weather") {
+      state.weather = msg.weather;
+      renderWeather();
+      if (localGet("view") === "routines") loadRoutines(); // automatic routines' explanations change
+    }
   };
   ws.onclose = () => { clearInterval(ping); setTimeout(connect, 3000); };
 }
 
 async function refresh() {
   try {
-    const [status, devices] = await Promise.all([api("GET", "/api/status"), api("GET", "/api/devices")]);
+    const [status, devices, weather] = await Promise.all(
+      [api("GET", "/api/status"), api("GET", "/api/devices"), api("GET", "/api/weather")]);
     state.status = status;
+    state.weather = weather;
+    renderWeather();
     state.devices = new Map(devices.map(d => [d.id, d]));
     renderDevices();
     renderClock();
@@ -853,4 +1102,10 @@ showView(localGet("view") || "devices");
 refresh();
 connect();
 setInterval(renderClock, 15000);
-setInterval(async () => { try { state.status = await api("GET", "/api/status"); } catch { /* offline */ } }, 10 * 60000);
+setInterval(async () => {
+  try {
+    state.status = await api("GET", "/api/status");
+    state.weather = await api("GET", "/api/weather");
+    renderWeather();
+  } catch { /* offline */ }
+}, 10 * 60000);

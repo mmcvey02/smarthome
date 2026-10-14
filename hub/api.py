@@ -19,7 +19,8 @@ from .drivers.base import IntegrationError
 from .hub import Hub
 from .models import Device
 from .routines.engine import RoutineAdapter
-from .routines.models import CurveRoutine
+from .routines.models import AutoRoutine, CurveRoutine
+from .weather import CATEGORIES, METRICS
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
@@ -54,6 +55,9 @@ def create_app(hub: Hub) -> FastAPI:
     async def lifespan(app: FastAPI):
         await hub.start()
         unsubscribe = hub.subscribe(broadcast)
+        if hub.weather:
+            hub.weather.subscribe(lambda data: [asyncio.create_task(_send(ws, {"type": "weather", "weather": weather_dict()}))
+                                                for ws in list(sockets)])
         yield
         unsubscribe()
         await hub.stop()
@@ -101,6 +105,30 @@ def create_app(hub: Hub) -> FastAPI:
 
     # ---- overview ----------------------------------------------------------
 
+    def weather_dict() -> dict[str, Any]:
+        w = hub.weather
+        return {
+            "enabled": w is not None,
+            "location": hub.location_info or None,
+            "data": w.data if w else None,
+            "error": w.error if w else ("No location set, so no weather. Add `location:` to config.yaml."
+                                        if not hub.location_info else "Weather is turned off in config.yaml."),
+            "stale": w.stale if w else True,
+            "metrics": w.metrics() if w else {},
+            "metric_labels": METRICS,
+            "conditions": list(CATEGORIES),
+        }
+
+    @app.get("/api/weather")
+    def weather() -> dict[str, Any]:
+        return weather_dict()
+
+    @app.post("/api/weather/refresh")
+    async def refresh_weather() -> dict[str, Any]:
+        if hub.weather:
+            await hub.weather.refresh()
+        return weather_dict()
+
     @app.get("/api/status")
     def status() -> dict[str, Any]:
         sun = hub.clock.sun_times(hub.clock.now().date())
@@ -109,6 +137,7 @@ def create_app(hub: Hub) -> FastAPI:
             "timezone": hub.clock.tz.key,
             "temperature_unit": hub.temperature_unit,
             "location_configured": hub.clock.location is not None,
+            "location": hub.location_info or None,
             "sun": {k: v.isoformat(timespec="minutes") for k, v in sun.items()},
             "integrations": [
                 {"id": i.id, "type": i.type, "devices": len(i.devices), "error": i.error}
@@ -153,8 +182,11 @@ def create_app(hub: Hub) -> FastAPI:
     # ---- routines ----------------------------------------------------------
 
     def routine_dict(r: Any) -> dict[str, Any]:
-        return {**r.model_dump(mode="json"), "last_run": hub.routines.last_run.get(r.id),
-                "running": r.id in hub.routines._running}
+        out = {**r.model_dump(mode="json"), "last_run": hub.routines.last_run.get(r.id),
+               "running": r.id in hub.routines._running}
+        if isinstance(r, AutoRoutine):
+            out["explain"] = hub.routines.auto.explain(r, hub.clock.now())
+        return out
 
     def parse_routine(raw: dict[str, Any]) -> Any:
         try:
@@ -199,6 +231,11 @@ def create_app(hub: Hub) -> FastAPI:
     async def stop_routine(routine_id: str) -> dict[str, bool]:
         hub.routines.cancel(routine_id)
         return {"ok": True}
+
+    @app.post("/api/auto/explain")
+    def explain_auto(raw: dict[str, Any] = Body(...)) -> list[str]:
+        r = parse_routine({"id": "preview", "name": "preview", **raw, "kind": "auto"})
+        return hub.routines.auto.explain(r, hub.clock.now())
 
     @app.post("/api/curve/preview")
     def preview_curve(raw: dict[str, Any] = Body(...)) -> list[dict[str, Any]]:

@@ -22,6 +22,7 @@ from .models import Device
 from .routines.engine import RoutineEngine, target_matches
 from .routines.models import Target
 from .routines.timespec import Clock, Location
+from .weather import WeatherService, detect_location
 
 log = logging.getLogger(__name__)
 
@@ -33,12 +34,18 @@ class Hub:
         data_dir.mkdir(parents=True, exist_ok=True)
         self.temperature_unit: str = str(config.get("temperature_unit", "F")).upper()
 
-        loc = config.get("location") or {}
-        tz = ZoneInfo(loc.get("timezone") or config.get("timezone") or "UTC")
-        location = None
-        if "latitude" in loc and "longitude" in loc:
-            location = Location(float(loc["latitude"]), float(loc["longitude"]), tz.key)
-        self.clock = Clock(tz, location)
+        # `location:` may be coordinates, "auto" (or missing) to look it up from the
+        # public IP address at startup, or "off" to use neither location nor weather.
+        loc = config.get("location", "auto")
+        self.location_info: dict[str, Any] = {}
+        self.weather: WeatherService | None = None
+        self.clock = Clock(ZoneInfo(config.get("timezone") or "UTC"))
+        if isinstance(loc, dict) and "latitude" in loc and "longitude" in loc:
+            self._set_location({**loc, "source": "config"})
+        elif loc == "auto" or loc is None:
+            cached = data_dir / "location.json"
+            if cached.exists():
+                self._set_location(json.loads(cached.read_text()))
 
         self.integrations: dict[str, Integration] = {}
         self.devices: dict[str, Device] = {}
@@ -51,6 +58,29 @@ class Hub:
         self._listeners: list[Callable[[Device], None]] = []
         self._poll_tasks: list[asyncio.Task[None]] = []
         self.routines = RoutineEngine(self, data_dir / "routines.json")
+
+    def _set_location(self, loc: dict[str, Any]) -> None:
+        tz = ZoneInfo(loc.get("timezone") or self.config.get("timezone") or "UTC")
+        self.location_info = {k: loc.get(k) for k in ("latitude", "longitude", "city", "region", "country", "source")}
+        self.location_info["timezone"] = tz.key
+        self.clock = Clock(tz, Location(float(loc["latitude"]), float(loc["longitude"]), tz.key))
+        wcfg = self.config.get("weather") or {}
+        if wcfg.get("enabled", True):
+            self.weather = WeatherService(float(loc["latitude"]), float(loc["longitude"]), tz,
+                                          self.temperature_unit, float(wcfg.get("refresh_minutes", 15)),
+                                          cache_path=self.data_dir / "weather.json")
+            self.weather.subscribe(lambda _data: self.routines.on_weather_update())
+
+    async def _detect_location(self) -> None:
+        try:
+            loc = await detect_location()
+        except Exception as e:
+            log.warning("Couldn't detect location from IP (%s). Set `location:` in config.yaml "
+                        "for sunrise/sunset and weather.", e)
+            return
+        (self.data_dir / "location.json").write_text(json.dumps(loc))
+        self._set_location(loc)
+        log.info("Location detected as %s, %s (%s)", loc.get("city"), loc.get("region"), loc["timezone"])
 
     @classmethod
     def from_file(cls, path: Path, data_dir: Path) -> Hub:
@@ -81,6 +111,11 @@ class Hub:
                 log.error("Unknown integration type %r (known: %s)", type_, ", ".join(sorted(REGISTRY)))
                 continue
             self.integrations[iid] = cls(iid, spec, self)
+
+        if self.clock.location is None and self.config.get("location", "auto") in ("auto", None):
+            await self._detect_location()
+        if self.weather:
+            self.weather.start()
 
         await asyncio.gather(*(self._start_integration(i) for i in self.integrations.values()))
         self.routines.load()
@@ -118,6 +153,8 @@ class Hub:
 
     async def stop(self) -> None:
         await self.routines.stop()
+        if self.weather:
+            await self.weather.stop()
         for t in self._poll_tasks:
             t.cancel()
         for integ in self.integrations.values():

@@ -57,6 +57,28 @@ def default_routines(hub: Hub) -> list[EventRoutine | CurveRoutine]:
             "actions": [{"type": "command", "target": {"kinds": ["vacuum"]}, "command": "start"}],
         },
         {
+            "kind": "auto", "id": "automatic", "name": "Automatic lights & climate",
+            "enabled": False,
+            "description": "Lights come on when it actually gets dark (earlier on cloudy evenings, and on gloomy "
+                           "days); mini-splits heat, cool, dry or switch off based on indoor temperature and "
+                           "the outdoor weather. Turn on to let the house run itself.",
+            "lighting": {"target": {"kinds": ["light"]}},
+            "climate": {"target": {"kinds": ["climate"]},
+                        "comfort_low": 68 if hub.temperature_unit == "F" else 20,
+                        "comfort_high": 76 if hub.temperature_unit == "F" else 24.5},
+        },
+        {
+            "kind": "event", "id": "heat-wave-precool", "name": "Heat wave pre-cool",
+            "enabled": False,
+            "description": "When it feels hotter than 90° outside, start cooling early so the house never gets hot.",
+            "triggers": [{"type": "weather", "metric": "feels_like", "op": "above",
+                          "value": 90 if hub.temperature_unit == "F" else 32}],
+            "between": ["09:00", "21:00"],
+            "actions": [{"type": "set", "target": {"kinds": ["climate"]},
+                         "state": {"on": True, "mode": "cool",
+                                   "target_temp": 74 if hub.temperature_unit == "F" else 23.5}}],
+        },
+        {
             "kind": "event", "id": "movie-night", "name": "Movie night",
             "description": "Scene: press Run to dim the living room.",
             "triggers": [],

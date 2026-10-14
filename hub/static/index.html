@@ -16,6 +16,7 @@
       <button class="tab" data-view="settings">Settings</button>
     </nav>
     <div class="clock">
+      <span id="clock-weather"></span>
       <span id="clock-time"></span>
       <span id="clock-sun" class="muted"></span>
     </div>
@@ -23,6 +24,7 @@
 
   <main>
     <section id="view-devices" class="view">
+      <div id="weather-panel"></div>
       <div id="room-filter" class="chips"></div>
       <div id="device-groups"></div>
     </section>
@@ -31,18 +33,21 @@
       <div class="toolbar">
         <h2>Routines</h2>
         <div class="spacer"></div>
+        <button class="btn" data-new="auto">+ Automatic</button>
         <button class="btn" data-new="curve">+ Lighting curve</button>
         <button class="btn primary" data-new="event">+ Routine</button>
       </div>
       <p class="muted intro">
+        <b>Automatic</b> routines use live weather and the sun: lights come on when it actually gets dark (earlier when it's cloudy) and the mini-splits pick heating, cooling or drying on their own.
         <b>Lighting curves</b> keep lights on a gentle schedule (dimmer and warmer as the evening goes on).
-        <b>Routines</b> run steps when a time arrives, the sun rises or sets, or a device changes. A routine with no trigger is a scene you run by hand.
+        <b>Routines</b> run steps when a time arrives, the sun rises or sets, the weather changes, or a device changes. A routine with no trigger is a scene you run by hand.
       </p>
       <div id="routine-list"></div>
     </section>
 
     <section id="view-settings" class="view hidden">
       <h2>Integrations</h2>
+      <div id="weather-settings"></div>
       <div id="integration-list"></div>
       <h2>Devices</h2>
       <p class="muted">Rename devices and assign rooms. Rooms are used for grouping and routine targets.</p>

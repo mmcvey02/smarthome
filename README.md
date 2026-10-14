@@ -14,10 +14,18 @@ Roombas and anything you add later), plus routines that follow the rhythm of the
   hallway light, but only after sunset". Triggers can be a clock time, a sunrise/sunset offset
   or a device changing state.
 - **Scenes**: a routine with no trigger is a button you press, such as "Movie night".
+- **Live weather** for the house's location: current conditions, today's high and low, rain
+  chance, sunrise and sunset, the next 24 hours and a 5-day forecast, at the top of the dashboard.
+- **Automatic routines** use the weather and the sun on their own. Lights come on when it
+  actually gets dark (earlier on cloudy evenings, and during gloomy rainy days), and the
+  mini-splits switch between heating, cooling and off to keep the house in a comfort range.
+- **Weather triggers and conditions** for any routine, such as "when it starts raining" or
+  "when it feels hotter than 90°", or "only if it isn't raining".
 - **Pluggable drivers**: adding a new brand means writing one small Python class.
 
-Five starter routines are created the first time it runs (Evening wind-down, Sunrise wake-up,
-Bedtime, Vacuum while out, Movie night). Edit or delete them freely.
+Starter routines are created the first time it runs: Evening wind-down, Sunrise wake-up,
+Bedtime, Movie night, and (switched off until you enable them) Vacuum while out, Automatic
+lights & climate, and Heat wave pre-cool. Edit or delete them freely.
 
 ## Quick start
 
@@ -74,14 +82,27 @@ Roombas are controlled locally over MQTT with [`roombapy`](https://pypi.org/proj
 Only one app can talk to a Roomba locally at a time. The iRobot phone app still works through the
 cloud.
 
+## Location and weather
+
+With `location: auto` (the default), the hub looks up its approximate location from your public
+IP address the first time it starts, using ipwho.is or ipapi.co, and saves it to `data/location.json`.
+This location is roughly your city, which is accurate enough for weather and sun times. To use
+exact coordinates, set them in `config.yaml`. A VPN on the hub's machine makes auto-detection
+report the VPN's location.
+
+Weather comes from [Open-Meteo](https://open-meteo.com/), which is free for non-commercial use
+and needs no account or key. The hub refreshes it every 15 minutes, and keeps showing the last
+known weather if the internet goes down. **Settings** shows the detected location and when the
+weather last updated, and has a Refresh button.
+
 ## Routines
 
-Open the **Routines** tab and choose **+ Lighting curve** or **+ Routine**. The editor has a form
-and a **JSON** view for advanced edits. Routines are stored in `data/routines.json`.
+Open the **Routines** tab and choose **+ Lighting curve** or **+ Routine**. There's also
+**+ Automatic** (see below). The editor has a form and a **JSON** view for advanced edits. Routines are stored in `data/routines.json`.
 
 **Times** can be `HH:MM` or sun-relative: `sunrise`, `sunset`, `dawn`, `dusk` or `noon`, with an
-optional offset in minutes (`sunset-45`, `sunrise+20`). Sun times need `location` set in
-`config.yaml`.
+optional offset in minutes (`sunset-45`, `sunrise+20`). Sun times use the hub's location
+(see above). Without a location, the hub assumes sunrise at 6:30 and sunset at 18:30.
 
 **Targets** choose devices by type (all lights), by room, by specific device, or every device.
 An action only affects devices that support it: "set brightness 30 %" aimed at a room leaves
@@ -114,6 +135,51 @@ the thermostat alone.
   that light alone for this long.
 - The editor draws the curve for the next 24 hours, with a band showing the colour temperature.
 
+### Automatic (weather-driven)
+
+An automatic routine has a lighting section and a climate section, and you can turn each one
+on or off. The editor's **Right now** box says exactly what it would do at this moment, for
+example: "Lights on at dusk: 5:18 PM today (sunset 6:16 PM, 43 min early for 96% cloud)".
+
+```json
+{
+  "kind": "auto", "id": "automatic", "name": "Automatic lights & climate",
+  "lighting": {
+    "target": {"kinds": ["light"]},
+    "dusk_on": true, "dusk_offset_minutes": -15, "cloudy_extra_minutes": 45,
+    "gloomy_day": true, "gloomy_cloud_cover": 90,
+    "brightness": null, "latest_on": "22:00"
+  },
+  "climate": {
+    "target": {"kinds": ["climate"]},
+    "comfort_low": 68, "comfort_high": 76,
+    "mild_action": "off", "dehumidify_above": null,
+    "only_when_on": false, "manual_override_minutes": 120, "min_change_minutes": 20
+  }
+}
+```
+
+**Lighting**
+- *Dusk*: lights in the target turn on once a day at sunset plus `dusk_offset_minutes`. Up to
+  `cloudy_extra_minutes` earlier when it's overcast, scaled by cloud cover. Never after `latest_on`.
+- *Gloomy days*: between 30 minutes after sunrise and dusk, lights turn on when it's raining,
+  stormy, snowing, foggy or `gloomy_cloud_cover`% cloudy. They turn off again when it clears.
+  Only lights the routine turned on are switched off, and not if you've adjusted them since.
+- Leave `brightness` empty to let a lighting curve set the level. It works well alongside
+  Evening wind-down.
+
+**Climate**, for each unit, every 5 minutes and whenever new weather arrives:
+- It uses the unit's indoor temperature, or the outdoor temperature if the unit doesn't report one.
+- Above `comfort_high`, the unit cools to `comfort_high`. Below `comfort_low`, it heats to
+  `comfort_low`. It keeps going while it's hot or cold outside, so the house holds the temperature
+  instead of drifting back.
+- In between, the unit is switched off, runs fan only, or is left alone (`mild_action`).
+  Optionally, it runs dry mode when outdoor humidity is above `dehumidify_above`.
+- There is a 1 °F / 0.5 °C deadband, and the unit's mode changes at most once every
+  `min_change_minutes`, so compressors don't short-cycle.
+- After you change a unit by hand, it's left alone for `manual_override_minutes`.
+  `only_when_on: true` means the routine only adjusts units that are already running.
+
 ### Event routines and scenes
 
 ```json
@@ -135,6 +201,12 @@ the thermostat alone.
 |---|---|
 | `time` | `at`: a clock or sun time |
 | `device` | `device`, `attribute`, `to` (optional; leave it out to fire on any change). Example: `{"device": "roomba:ABC", "attribute": "status", "to": "cleaning"}` |
+| `weather` | `metric`, `op`, `value`. Fires when the check *becomes* true, e.g. `{"metric": "condition", "op": "is", "value": "rain"}` (it starts raining) or `{"metric": "feels_like", "op": "above", "value": 90}` |
+
+Weather metrics: `temperature`, `feels_like`, `humidity`, `cloud_cover`, `precipitation`,
+`wind_speed`, `uv_index`, `rain_chance` (today's maximum), `today_high`, `today_low` (compared
+with `above`/`below`), and `condition` (compared with `is`/`is_not`). Conditions are `clear`,
+`partly_cloudy`, `cloudy`, `fog`, `rain`, `snow` and `storm`.
 
 | Action | Fields |
 |---|---|
@@ -145,7 +217,9 @@ the thermostat alone.
 | `routine` | `routine`: id of another routine to run |
 
 `days` limits which weekdays a routine runs. `between: ["sunset", "23:30"]` limits it to a
-time window, which is useful with device triggers. **Run** in the dashboard ignores both.
+time window, which is useful with device and weather triggers. `weather: [...]` lists checks
+that must all hold, e.g. `[{"metric": "condition", "op": "is_not", "value": "rain"}]`. A check
+counts as not met when there's no weather data. **Run** in the dashboard ignores all of these.
 
 ## Adding a new kind of device
 
@@ -232,7 +306,9 @@ The dashboard is a client of a small JSON API, which you can also script against
 
 | | |
 |---|---|
-| `GET /api/status` | time, sun times, integration health, rooms |
+| `GET /api/status` | time, sun times, location, integration health, rooms |
+| `GET /api/weather`, `POST /api/weather/refresh` | current weather and forecast |
+| `POST /api/auto/explain` | what an automatic routine would do right now |
 | `GET /api/devices` | all devices |
 | `POST /api/devices/{id}/state` | `{"on": true, "brightness": 40}` |
 | `POST /api/devices/{id}/command` | `{"command": "start"}` |
@@ -241,7 +317,7 @@ The dashboard is a client of a small JSON API, which you can also script against
 | `GET/POST /api/routines`, `PUT/DELETE /api/routines/{id}` | manage routines |
 | `POST /api/routines/{id}/run`, `/stop` | run now / cancel a running routine |
 | `POST /api/curve/preview` | sample a curve over 24 hours |
-| `WS /api/ws` | live device updates |
+| `WS /api/ws` | live device and weather updates |
 
 Interactive docs are at `/docs`.
 
@@ -253,6 +329,7 @@ pytest
 ```
 
 Layout: `hub/models.py` (common device model), `hub/drivers/` (one file per brand),
-`hub/routines/` (time parsing, routine schema, engine, starter routines), `hub/hub.py` (device
+`hub/weather.py` (Open-Meteo and location lookup), `hub/routines/` (time parsing, routine
+schema, engine, automatic routines, starter routines), `hub/hub.py` (device
 registry and integration lifecycle), `hub/api.py` (HTTP/WebSocket), `hub/static/` (dashboard, plain
 JS, no build step).
