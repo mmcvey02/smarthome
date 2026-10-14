@@ -1,0 +1,53 @@
+# Copy to config.yaml and fill in. config.yaml is git-ignored because it holds passwords.
+
+temperature_unit: F          # F or C, used everywhere in the dashboard and routines
+
+# Needed for sunrise/sunset routines. Without it the hub assumes 6:30 / 18:30.
+location:
+  latitude: 40.71
+  longitude: -74.00
+  timezone: America/New_York
+
+# Optional: require this password (any username) to open the dashboard.
+# Recommended if anyone else uses your network.
+# password: "change-me"
+
+# Optional: extra Python modules with your own drivers (see README).
+# plugins:
+#   - my_drivers.philips_hue
+
+integrations:
+  # Simulated devices so you can try everything without hardware.
+  # Delete or set `enabled: false` once your real devices are connected.
+  - type: demo
+    id: demo
+
+  # GE Cync bulbs and plugs. After filling this in, run `smarthome cync-login` once.
+  - type: cync
+    id: cync
+    enabled: false
+    username: you@example.com
+    password: "your-cync-password"
+
+  # MRCOOL mini-splits (local network). Find id/token/key with `msmart-ng discover`.
+  - type: mrcool
+    id: mrcool
+    enabled: false
+    units:
+      - name: Bedroom Mini-Split
+        room: Bedroom
+        host: 192.168.1.50
+        device_id: 147334558165565
+        token: "paste token here"    # V3 firmware only
+        key: "paste key here"
+
+  # iRobot Roombas (local network). Get blid/password with `roombapy discover`.
+  - type: roomba
+    id: roomba
+    enabled: false
+    robots:
+      - name: Roomba
+        room: Living Room
+        host: 192.168.1.60
+        blid: "3145C..."
+        password: ":1:1493..."

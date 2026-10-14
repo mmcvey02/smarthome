@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14161a">
+  <title>Home</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Home</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="devices">Devices</button>
+      <button class="tab" data-view="routines">Routines</button>
+      <button class="tab" data-view="settings">Settings</button>
+    </nav>
+    <div class="clock">
+      <span id="clock-time"></span>
+      <span id="clock-sun" class="muted"></span>
+    </div>
+  </header>
+
+  <main>
+    <section id="view-devices" class="view">
+      <div id="room-filter" class="chips"></div>
+      <div id="device-groups"></div>
+    </section>
+
+    <section id="view-routines" class="view hidden">
+      <div class="toolbar">
+        <h2>Routines</h2>
+        <div class="spacer"></div>
+        <button class="btn" data-new="curve">+ Lighting curve</button>
+        <button class="btn primary" data-new="event">+ Routine</button>
+      </div>
+      <p class="muted intro">
+        <b>Lighting curves</b> keep lights on a gentle schedule (dimmer and warmer as the evening goes on).
+        <b>Routines</b> run steps when a time arrives, the sun rises or sets, or a device changes. A routine with no trigger is a scene you run by hand.
+      </p>
+      <div id="routine-list"></div>
+    </section>
+
+    <section id="view-settings" class="view hidden">
+      <h2>Integrations</h2>
+      <div id="integration-list"></div>
+      <h2>Devices</h2>
+      <p class="muted">Rename devices and assign rooms. Rooms are used for grouping and routine targets.</p>
+      <div id="device-settings"></div>
+    </section>
+  </main>
+
+  <dialog id="editor">
+    <form method="dialog" id="editor-form" novalidate>
+      <header class="editor-head">
+        <h2 id="editor-title">Routine</h2>
+        <div class="spacer"></div>
+        <button type="button" class="btn ghost" id="editor-json-toggle">JSON</button>
+      </header>
+      <div id="editor-body"></div>
+      <textarea id="editor-json" class="hidden" spellcheck="false"></textarea>
+      <div id="editor-errors" class="errors"></div>
+      <footer class="editor-foot">
+        <button type="button" class="btn" id="editor-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="editor-save">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

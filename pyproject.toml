@@ -1,0 +1,34 @@
+[project]
+name = "smarthome-hub"
+version = "0.1.0"
+description = "One dashboard for every smart device in the house, plus routines that follow the day."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pyyaml>=6.0",
+    "astral>=3.2",
+]
+
+[project.optional-dependencies]
+cync = ["pycync>=0.6", "aiohttp>=3.9"]
+mrcool = ["msmart-ng>=2025.1"]
+roomba = ["roombapy>=2.0"]
+all = ["pycync>=0.6", "aiohttp>=3.9", "msmart-ng>=2025.1", "roombapy>=2.0"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+smarthome = "hub.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["hub*"]
+
+[tool.setuptools.package-data]
+hub = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
