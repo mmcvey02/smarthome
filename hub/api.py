@@ -140,11 +140,22 @@ def create_app(hub: Hub) -> FastAPI:
             "location": hub.location_info or None,
             "sun": {k: v.isoformat(timespec="minutes") for k, v in sun.items()},
             "integrations": [
-                {"id": i.id, "type": i.type, "devices": len(i.devices), "error": i.error}
+                {"id": i.id, "type": i.type, "devices": len(i.devices), "error": i.error,
+                 "needs_login": bool(i.needs_login)}
                 for i in hub.integrations.values()
             ],
             "rooms": hub.rooms(),
         }
+
+    @app.post("/api/integrations/{integration_id}/login")
+    async def integration_login(integration_id: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        integ = hub.integrations.get(integration_id)
+        if integ is None:
+            raise HTTPException(404, "No such integration")
+        result = await guarded(integ.login(body.get("code")))
+        if result == "signed_in":
+            await hub.restart_integration(integration_id)
+        return {"status": result, "error": integ.error, "devices": len(integ.devices)}
 
     # ---- devices -----------------------------------------------------------
 

@@ -948,6 +948,20 @@ function stateFields(s) {
 
 // ---------------------------------------------------------------- settings view
 
+async function integrationLogin(integ) {
+  try {
+    let res = await api("POST", `/api/integrations/${encodeURIComponent(integ.id)}/login`, {});
+    if (res.status === "code_sent") {
+      const code = prompt(`${integ.type === "cync" ? "Cync" : integ.id} emailed you a verification code. Enter it here:`);
+      if (!code) return;
+      res = await api("POST", `/api/integrations/${encodeURIComponent(integ.id)}/login`, { code });
+    }
+    toast(res.error ? res.error : `Signed in: ${res.devices} devices found`, !!res.error);
+    await refresh();
+    renderSettings();
+  } catch (e) { toast(e.message, true); }
+}
+
 function renderSettings() {
   const st = state.status;
   if (!st) return;
@@ -956,7 +970,8 @@ function renderSettings() {
       h("span", { class: "dot" + (i.error ? " err" : "") }),
       h("b", {}, i.id), h("span", { class: "muted" }, i.type),
       h("div", { class: "spacer" }),
-      i.error ? h("span", { class: "errors", style: "padding:0" }, i.error) : h("span", { class: "muted" }, `${i.devices} devices`))),
+      i.error ? h("span", { class: "errors", style: "padding:0" }, i.error) : h("span", { class: "muted" }, `${i.devices} devices`),
+      i.needs_login ? h("button", { class: "btn small primary", onclick: () => integrationLogin(i) }, "Sign in") : null)),
     st.location_configured ? null : h("p", { class: "muted" },
       "Tip: add your location to config.yaml so sunrise/sunset times are accurate (currently using 6:30 / 18:30)."));
 

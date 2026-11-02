@@ -141,6 +141,19 @@ class Hub:
             self._poll_tasks.append(asyncio.create_task(self._poll_loop(integ)))
         log.info("Integration %s: %d devices", integ.id, len(integ.devices))
 
+    async def restart_integration(self, integration_id: str) -> None:
+        """Start an integration again, e.g. after signing in."""
+        integ = self.integrations[integration_id]
+        try:
+            await integ.stop()
+        except Exception:
+            log.exception("stopping %s", integ.id)
+        for device_id in list(integ.devices):
+            self.devices.pop(device_id, None)
+        integ.devices = {}
+        integ.error = None
+        await self._start_integration(integ)
+
     async def _poll_loop(self, integ: Integration) -> None:
         while True:
             await asyncio.sleep(integ.poll_interval)

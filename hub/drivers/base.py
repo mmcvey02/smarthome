@@ -42,6 +42,12 @@ class Integration(abc.ABC):
         self.devices: dict[str, Device] = {}
         self.error: str | None = None
 
+    #: True when the user has to sign in (from the Settings page) before this works.
+    needs_login: bool = False
+
+    async def login(self, code: str | None = None) -> str:
+        raise IntegrationError(f"{self.type} doesn't use sign-in")
+
     def device_id(self, native_id: Any) -> str:
         return f"{self.id}:{native_id}"
 

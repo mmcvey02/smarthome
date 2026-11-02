@@ -1,8 +1,8 @@
 """GE Cync lights and plugs, via the cloud API (the `pycync` library).
 
-Cync accounts require an emailed two-factor code on first login, so run
-`smarthome cync-login` once; it stores a refresh token in data/cync_token.json
-and the hub signs in silently from then on.
+Cync accounts require an emailed two-factor code on first login: press Sign in
+on the Settings page (or run `smarthome cync-login`). A refresh token is stored in
+data/cync_token.json and the hub signs in silently from then on.
 
 config.yaml:
     - type: cync
@@ -68,7 +68,7 @@ class CyncIntegration(Integration):
 
         self._token_file = token_path(self.hub.data_dir, self.id)
         if not self._token_file.exists():
-            raise IntegrationError("Not signed in. Run `smarthome cync-login` once to enter the emailed code.")
+            raise IntegrationError("Not signed in yet. Use Sign in on the Settings page (Cync emails you a code).")
         saved = json.loads(self._token_file.read_text())
         user = User(saved["access_token"], saved["refresh_token"], saved["authorize"],
                     saved["user_id"], expires_at=saved["expires_at"])
@@ -114,6 +114,23 @@ class CyncIntegration(Integration):
 
         self._cync.set_update_callback(self._on_update)
         self._cync.update_device_states()
+
+    @property
+    def needs_login(self) -> bool:
+        return not token_path(self.hub.data_dir, self.id).exists()
+
+    async def login(self, code: str | None = None) -> str:
+        """Sign in from the dashboard: first call emails a code, second call submits it."""
+        username, password = self.config.get("username"), self.config.get("password")
+        if not username or not password:
+            raise IntegrationError("Add your Cync email and password to config.yaml, then restart.")
+        try:
+            import aiohttp  # noqa: F401
+            import pycync  # noqa: F401
+        except ImportError as e:
+            raise IntegrationError("pycync is not installed: pip install 'smarthome-hub[cync]'") from e
+        signed_in = await web_login(username, password, token_path(self.hub.data_dir, self.id), code)
+        return "signed_in" if signed_in else "code_sent"
 
     def _read_state(self, device: Device, dev: Any) -> None:
         device.available = bool(getattr(dev, "is_online", True))
@@ -166,6 +183,24 @@ class CyncIntegration(Integration):
 def _cap(name: str) -> Any:
     from pycync.devices.capabilities import CyncCapability
     return CyncCapability[name]
+
+
+async def web_login(username: str, password: str, out: Path, code: str | None) -> bool:
+    """One step of sign-in. Returns True once signed in (token saved), False if a code was emailed."""
+    import aiohttp
+    from pycync import Auth
+    from pycync.exceptions import AuthFailedError, TwoFactorRequiredError
+
+    async with aiohttp.ClientSession() as session:
+        auth = Auth(session, username=username, password=password)
+        try:
+            user = await auth.login(code.strip() if code else None)
+        except TwoFactorRequiredError:
+            return False
+        except AuthFailedError as e:
+            raise IntegrationError(f"Cync sign-in failed: {e}") from e
+        save_user(out, user)
+        return True
 
 
 async def interactive_login(username: str, password: str, out: Path) -> None:

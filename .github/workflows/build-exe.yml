@@ -1,0 +1,67 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to publish the exe as a release download
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev,exe]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: Build SmartHome.exe
+        run: python packaging/build_exe.py
+
+      - name: Smoke-test the exe
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item dist\SmartHome.exe $dir
+          $p = Start-Process -FilePath (Join-Path $dir "SmartHome.exe") -ArgumentList "--no-browser","--port","8123" -WorkingDirectory $dir -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+              $devices = Invoke-RestMethod http://localhost:8123/api/devices
+              $page = Invoke-WebRequest http://localhost:8123/ -UseBasicParsing
+              if ($devices.Count -ge 1 -and $page.StatusCode -eq 200) { $ok = $true }
+            } catch { }
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "SmartHome.exe did not serve the dashboard" }
+          if (-not (Test-Path (Join-Path $dir "config.yaml"))) { throw "first run did not create config.yaml" }
+          Write-Host "exe served $($devices.Count) devices and created config.yaml"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartHome-windows
+          path: dist/SmartHome.exe
+
+      - name: Publish download (release "exe-latest")
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete exe-latest --yes --cleanup-tag || true
+          gh release create exe-latest dist/SmartHome.exe \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "SmartHome for Windows (latest build)" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Download SmartHome.exe, put it in its own folder and double-click it. See the README for setup."

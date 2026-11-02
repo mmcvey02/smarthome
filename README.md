@@ -27,7 +27,30 @@ Starter routines are created the first time it runs: Evening wind-down, Sunrise 
 Bedtime, Movie night, and (switched off until you enable them) Vacuum while out, Automatic
 lights & climate, and Heat wave pre-cool. Edit or delete them freely.
 
-## Quick start
+## Windows: one-click SmartHome.exe
+
+1. Download **SmartHome.exe** from the
+   [`exe-latest` release](https://github.com/mmcvey02/smarthome/releases/tag/exe-latest).
+   It's rebuilt automatically on every push.
+2. Put it in its own folder, such as `Documents\SmartHome`, and double-click it.
+3. The dashboard opens in your browser. The first run creates `config.yaml` and a `data` folder
+   next to the exe, starting with demo devices.
+4. To add your real devices, open `config.yaml` in Notepad, fill in the sections for Cync,
+   MRCOOL and Roomba (set `enabled: true`), then close the SmartHome window and double-click
+   the exe again. For Cync, press **Sign in** on the Settings page and enter the code Cync emails you.
+
+Keep the black SmartHome window open while you use the hub; closing it stops the hub. To start
+it with Windows, put a shortcut to the exe in the Startup folder (press Win+R, type
+`shell:startup`). Phones and tablets on your Wi-Fi can use the address shown in the window.
+
+Windows may warn the first time ("Windows protected your PC") because the exe isn't
+code-signed. Choose **More info → Run anyway**. Windows Firewall may also ask to allow
+network access. Allow it on private networks so other devices can reach the dashboard.
+
+To build the exe yourself on Windows, run `pip install -e ".[all,exe]"` and then
+`python packaging/build_exe.py`. The exe is written to `dist\SmartHome.exe`.
+
+## Quick start (from source: Linux, Mac, Raspberry Pi)
 
 Requires Python 3.11+. Run it on any always-on machine on your home network, such as a
 Raspberry Pi, a NAS or an old laptop.
@@ -36,7 +59,7 @@ Raspberry Pi, a NAS or an old laptop.
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[all]'          # or just the extras you need: .[cync], .[mrcool], .[roomba]
 cp config.example.yaml config.yaml
-smarthome                         # then open http://<this-machine>:8080
+smarthome                         # opens http://localhost:8080 in your browser
 ```
 
 The example config starts with simulated **demo** devices, so you can explore the dashboard
@@ -54,9 +77,10 @@ Cync has no local API, so the hub talks to the Cync cloud the same way the app d
 
 1. Fill in the `cync` section of `config.yaml` with your Cync email and password, and set
    `enabled: true`.
-2. Run `smarthome cync-login`. Cync emails you a code; type it in. A refresh token is saved
-   to `data/cync_token.json`, so you only do this once.
-3. Restart the hub. Bulbs keep the room names from the Cync app.
+2. Restart the hub, open **Settings** and press **Sign in** next to Cync. Cync emails you a
+   code; type it in. (`smarthome cync-login` does the same from a terminal.) A refresh token is
+   saved to `data/cync_token.json`, so you only do this once.
+3. Your bulbs appear straight away, keeping the room names from the Cync app.
 
 ### MRCOOL mini-splits
 
@@ -282,7 +306,7 @@ Wants=network-online.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/smarthome
-ExecStart=/home/pi/smarthome/.venv/bin/smarthome
+ExecStart=/home/pi/smarthome/.venv/bin/smarthome --no-browser
 Restart=always
 
 [Install]
