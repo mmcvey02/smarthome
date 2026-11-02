@@ -90,7 +90,7 @@ jobs:
           $env:SMARTHOME_UPDATE_URL = "http://127.0.0.1:8765/"
           Start-Process -FilePath "$old\SmartHome.exe" -ArgumentList "--no-browser","--port","8124" -WorkingDirectory $old | Out-Null
           $before = $null
-          for ($i = 0; $i -lt 60 -and -not $before; $i++) {
+          for ($i = 0; $i -lt 60 -and $null -eq $before; $i++) {  # build 0 is falsy, so compare to $null
             Start-Sleep -Seconds 2
             try { $before = (Invoke-RestMethod http://localhost:8124/api/status).build.number } catch { }
           }
