@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cync = ["pycync>=0.6", "aiohttp>=3.9"]
+cync = ["pycync>=0.6", "aiohttp>=3.9"]  # pycync needs Python 3.13+
 mrcool = ["msmart-ng>=2025.1"]
 roomba = ["roombapy>=2.0"]
 all = ["pycync>=0.6", "aiohttp>=3.9", "msmart-ng>=2025.1", "roombapy>=2.0"]

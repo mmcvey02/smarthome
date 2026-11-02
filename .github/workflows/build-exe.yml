@@ -12,11 +12,11 @@ jobs:
   windows-exe:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"  # pycync (Cync) needs 3.13+
 
       - name: Install
         run: |
@@ -50,7 +50,7 @@ jobs:
           if (-not (Test-Path (Join-Path $dir "config.yaml"))) { throw "first run did not create config.yaml" }
           Write-Host "exe served $($devices.Count) devices and created config.yaml"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: SmartHome-windows
           path: dist/SmartHome.exe
