@@ -11,6 +11,8 @@ permissions:
 jobs:
   windows-exe:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -26,10 +28,40 @@ jobs:
       - name: Test
         run: pytest -q
 
+      # An "older" build, used only to prove the self-updater can move it to this build.
+      - name: Build previous version (for the update test)
+        shell: pwsh
+        env:
+          BUILD_NUMBER: "0"
+          BUILD_SHA: "previous"
+        run: |
+          python packaging/build_exe.py
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\old" | Out-Null
+          Move-Item dist\SmartHome.exe "$env:RUNNER_TEMP\old\SmartHome.exe"
+
       - name: Build SmartHome.exe
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_SHA: ${{ github.sha }}
         run: python packaging/build_exe.py
 
-      - name: Smoke-test the exe
+      - name: Write version.json
+        shell: pwsh
+        run: |
+          $exe = Get-Item dist\SmartHome.exe
+          $notes = (git log -1 --format=%s).Trim()
+          [ordered]@{
+            number = [int]"${{ github.run_number }}"
+            sha    = "${{ github.sha }}"
+            file   = "SmartHome.exe"
+            size   = $exe.Length
+            sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+            date   = (Get-Date).ToUniversalTime().ToString("s") + "Z"
+            notes  = $notes
+          } | ConvertTo-Json | Set-Content dist\version.json -Encoding utf8NoBOM
+          Get-Content dist\version.json
+
+      - name: Smoke-test the exe (first run)
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TEMP "smoke"
@@ -45,15 +77,47 @@ jobs:
               if ($devices.Count -ge 1 -and $page.StatusCode -eq 200) { $ok = $true }
             } catch { }
           }
-          Stop-Process -Id $p.Id -Force
+          Get-Process SmartHome -ErrorAction SilentlyContinue | Stop-Process -Force
           if (-not $ok) { throw "SmartHome.exe did not serve the dashboard" }
           if (-not (Test-Path (Join-Path $dir "config.yaml"))) { throw "first run did not create config.yaml" }
           Write-Host "exe served $($devices.Count) devices and created config.yaml"
 
+      - name: Test self-update (previous build -> this build)
+        shell: pwsh
+        run: |
+          $old = "$env:RUNNER_TEMP\old"
+          $server = Start-Process python -ArgumentList "-m","http.server","8765","--bind","127.0.0.1","--directory","dist" -PassThru -WindowStyle Hidden
+          $env:SMARTHOME_UPDATE_URL = "http://127.0.0.1:8765/"
+          Start-Process -FilePath "$old\SmartHome.exe" -ArgumentList "--no-browser","--port","8124" -WorkingDirectory $old | Out-Null
+          $before = $null
+          for ($i = 0; $i -lt 60 -and -not $before; $i++) {
+            Start-Sleep -Seconds 2
+            try { $before = (Invoke-RestMethod http://localhost:8124/api/status).build.number } catch { }
+          }
+          if ($before -ne 0) { throw "previous build didn't start (got '$before')" }
+          Invoke-RestMethod -Method Post http://localhost:8124/api/update/install | Out-Null
+          $after = $null
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            try { $after = (Invoke-RestMethod http://localhost:8124/api/status).build.number } catch { }
+            if ($after -eq [int]"${{ github.run_number }}") { break }
+          }
+          Start-Sleep -Seconds 10
+          $leftover = Test-Path "$old\SmartHome.exe.old"
+          $hashOk = (Get-FileHash "$old\SmartHome.exe").Hash -eq (Get-FileHash dist\SmartHome.exe).Hash
+          Get-Process SmartHome -ErrorAction SilentlyContinue | Stop-Process -Force
+          Stop-Process -Id $server.Id -Force
+          if ($after -ne [int]"${{ github.run_number }}") { throw "self-update did not restart on the new build (got '$after')" }
+          if (-not $hashOk) { throw "SmartHome.exe was not replaced with the new build" }
+          if ($leftover) { throw "SmartHome.exe.old was not cleaned up" }
+          Write-Host "self-update OK: build $before -> build $after"
+
       - uses: actions/upload-artifact@v5
         with:
           name: SmartHome-windows
-          path: dist/SmartHome.exe
+          path: |
+            dist/SmartHome.exe
+            dist/version.json
 
       - name: Publish download (release "exe-latest")
         shell: bash
@@ -61,7 +125,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete exe-latest --yes --cleanup-tag || true
-          gh release create exe-latest dist/SmartHome.exe \
+          gh release create exe-latest dist/SmartHome.exe dist/version.json \
             --prerelease --target "$GITHUB_SHA" \
-            --title "SmartHome for Windows (latest build)" \
-            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Download SmartHome.exe, put it in its own folder and double-click it. See the README for setup."
+            --title "SmartHome for Windows (build ${{ github.run_number }})" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Download SmartHome.exe, put it in its own folder and double-click it. It keeps itself up to date from here. See the README for setup."

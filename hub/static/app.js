@@ -948,6 +948,42 @@ function stateFields(s) {
 
 // ---------------------------------------------------------------- settings view
 
+async function renderUpdates() {
+  const box = $("#update-settings");
+  let u;
+  try { u = await api("GET", "/api/update"); } catch { return; }
+  const cur = u.current || {};
+  const curText = cur.number ? `build ${cur.number} (${(cur.sha || "").slice(0, 7)})` : "development version";
+  if (!u.supported) {
+    box.replaceChildren(h("div", { class: "integration" }, h("span", { class: "dot" }), h("b", {}, "Version"),
+      h("span", { class: "muted" }, curText), h("div", { class: "spacer" }),
+      h("span", { class: "muted" }, "Running from source: update with git pull. Automatic updates are built into SmartHome.exe.")));
+    return;
+  }
+  const latest = u.latest;
+  const statusText = {
+    checking: "Checking…", downloading: "Downloading the update…", installing: "Installing, restarting in a moment…",
+    ready: "Update downloaded; it installs as soon as no routine is running.",
+  }[u.status] || (u.available ? `Build ${latest.number} is available${latest.notes ? `: ${latest.notes}` : ""}`
+    : latest ? "Up to date" : "Not checked yet");
+  const act = (path, body) => async () => {
+    try {
+      await api("POST", path, body);
+      if (path.endsWith("install")) toast("Updating… the page reloads when the new version is running.");
+    } catch (e) { toast(e.message, true); }
+    renderUpdates();
+  };
+  box.replaceChildren(h("div", { class: "integration" },
+    h("span", { class: "dot" + (u.error ? " err" : "") }),
+    h("b", {}, "Version"), h("span", { class: "muted" }, curText),
+    h("div", { class: "spacer" }),
+    h("span", { class: u.error ? "errors" : "muted", style: "padding:0" }, u.error || statusText),
+    h("label", { class: "checkbox" }, h("input", { type: "checkbox", checked: u.auto,
+      onchange: e => act("/api/update/settings", { auto: e.target.checked })() }), "Automatic"),
+    u.available ? h("button", { class: "btn small primary", onclick: act("/api/update/install") }, "Update now")
+      : h("button", { class: "btn small", onclick: act("/api/update/check") }, "Check now")));
+}
+
 async function integrationLogin(integ) {
   try {
     let res = await api("POST", `/api/integrations/${encodeURIComponent(integ.id)}/login`, {});
@@ -974,6 +1010,8 @@ function renderSettings() {
       i.needs_login ? h("button", { class: "btn small primary", onclick: () => integrationLogin(i) }, "Sign in") : null)),
     st.location_configured ? null : h("p", { class: "muted" },
       "Tip: add your location to config.yaml so sunrise/sunset times are accurate (currently using 6:30 / 18:30)."));
+
+  renderUpdates();
 
   const w = state.weather;
   const loc = w?.location;
@@ -1101,8 +1139,16 @@ async function refresh() {
   try {
     const [status, devices, weather] = await Promise.all(
       [api("GET", "/api/status"), api("GET", "/api/devices"), api("GET", "/api/weather")]);
+    // The hub restarted on a new version: reload so this page runs the new dashboard too.
+    if (state.status?.build && status.build && state.status.build.sha !== status.build.sha) {
+      localSet("justUpdated", String(status.build.number));
+      location.reload();
+      return;
+    }
     state.status = status;
     state.weather = weather;
+    const updated = localGet("justUpdated");
+    if (updated) { localSet("justUpdated", ""); toast(`Updated to build ${updated}`); }
     renderWeather();
     state.devices = new Map(devices.map(d => [d.id, d]));
     renderDevices();

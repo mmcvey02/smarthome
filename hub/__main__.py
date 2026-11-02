@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import getpass
 import logging
+import os
 import socket
 import sys
 import threading
@@ -58,12 +59,23 @@ def open_browser_when_ready(port: int) -> None:
     threading.Thread(target=wait_then_open, daemon=True).start()
 
 
+def wait_for_port(port: int, seconds: float = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while port_in_use(port) and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+
 def serve(args: argparse.Namespace) -> None:
     import uvicorn
 
     from .api import create_app
     from .hub import Hub
+    from .updater import Updater, current_build, restart_command, spawn
 
+    if args.after_update:
+        # Just updated: the previous version may still be shutting down.
+        wait_for_port(args.port)
+        print(f"Updated to build {current_build()['number']}.\n")
     if port_in_use(args.port):
         print(f"The hub already seems to be running; opening http://localhost:{args.port}/")
         webbrowser.open(f"http://localhost:{args.port}/")
@@ -76,6 +88,19 @@ def serve(args: argparse.Namespace) -> None:
     config = uvicorn.Config(create_app(hub), host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config)
 
+    restart = False
+
+    def request_restart() -> None:
+        nonlocal restart
+        restart = True
+        server.should_exit = True
+
+    # Only the Windows exe is published. A custom SMARTHOME_UPDATE_URL (used by the build's
+    # self-test) means the caller serves a matching build, so allow it on any platform.
+    updatable = FROZEN and (sys.platform == "win32" or bool(os.environ.get("SMARTHOME_UPDATE_URL")))
+    hub.updater = Updater(hub, Path(sys.executable) if updatable else None, request_restart,
+                          hub.config.get("updates") or {})
+
     print(f"Smart Home Hub is running: http://localhost:{args.port}/")
     print(f"Other devices on your network can use http://{local_ip()}:{args.port}/")
     if FROZEN:
@@ -87,6 +112,9 @@ def serve(args: argparse.Namespace) -> None:
         # The Roomba (MQTT) client needs the selector event loop; Windows defaults to proactor.
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
     asyncio.run(server.serve())
+    if restart:
+        # The new exe is in place and the port is free: start it, then let this process end.
+        spawn(restart_command(Path(sys.executable), sys.argv[1:]))
 
 
 def local_ip() -> str:
@@ -127,8 +155,16 @@ def main() -> None:
         p.add_argument("--host", default="0.0.0.0")
         p.add_argument("--port", type=int, default=8080)
         p.add_argument("--no-browser", action="store_true", help="don't open the dashboard automatically")
+        p.add_argument("--after-update", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="store_true", help="print the build number and exit")
 
     args = parser.parse_args()
+    if args.version:
+        import json
+
+        from .updater import current_build
+        print(json.dumps(current_build()))
+        return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     try:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -20,6 +20,7 @@ from .hub import Hub
 from .models import Device
 from .routines.engine import RoutineAdapter
 from .routines.models import AutoRoutine, CurveRoutine
+from .updater import current_build
 from .weather import CATEGORIES, METRICS
 
 log = logging.getLogger(__name__)
@@ -58,8 +59,12 @@ def create_app(hub: Hub) -> FastAPI:
         if hub.weather:
             hub.weather.subscribe(lambda data: [asyncio.create_task(_send(ws, {"type": "weather", "weather": weather_dict()}))
                                                 for ws in list(sockets)])
+        if hub.updater:
+            hub.updater.start()
         yield
         unsubscribe()
+        if hub.updater:
+            await hub.updater.stop()
         await hub.stop()
 
     app = FastAPI(title="Smart Home Hub", lifespan=lifespan)
@@ -134,6 +139,7 @@ def create_app(hub: Hub) -> FastAPI:
         sun = hub.clock.sun_times(hub.clock.now().date())
         return {
             "now": hub.clock.now().isoformat(timespec="seconds"),
+            "build": current_build(),
             "timezone": hub.clock.tz.key,
             "temperature_unit": hub.temperature_unit,
             "location_configured": hub.clock.location is not None,
@@ -156,6 +162,37 @@ def create_app(hub: Hub) -> FastAPI:
         if result == "signed_in":
             await hub.restart_integration(integration_id)
         return {"status": result, "error": integ.error, "devices": len(integ.devices)}
+
+    # ---- updates -----------------------------------------------------------
+
+    def update_dict() -> dict[str, Any]:
+        if hub.updater:
+            return hub.updater.to_dict()
+        return {"supported": False, "current": current_build(), "status": "unsupported", "available": False}
+
+    @app.get("/api/update")
+    def update_status() -> dict[str, Any]:
+        return update_dict()
+
+    @app.post("/api/update/check")
+    async def update_check() -> dict[str, Any]:
+        if hub.updater and hub.updater.supported:
+            await hub.updater.check()
+        return update_dict()
+
+    @app.post("/api/update/install")
+    async def update_install() -> dict[str, Any]:
+        if not (hub.updater and hub.updater.supported):
+            raise HTTPException(400, "Updates only work in the Windows SmartHome.exe. From source, use git pull.")
+        # Run in the background: the hub restarts when it's done, which would cut this request off.
+        asyncio.create_task(hub.updater.install(force=True))
+        return update_dict()
+
+    @app.post("/api/update/settings")
+    async def update_settings(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        if hub.updater and "auto" in body:
+            hub.updater.set_auto(bool(body["auto"]))
+        return update_dict()
 
     # ---- devices -----------------------------------------------------------
 
@@ -276,7 +313,11 @@ def create_app(hub: Hub) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+    def index() -> HTMLResponse:
+        # Version the asset URLs so browsers pick up the new dashboard after an update.
+        v = current_build().get("sha") or "dev"
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        html = html.replace("/static/style.css", f"/static/style.css?v={v}").replace("/static/app.js", f"/static/app.js?v={v}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     return app

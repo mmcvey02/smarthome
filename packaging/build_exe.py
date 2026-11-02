@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import PyInstaller.__main__
@@ -22,6 +23,16 @@ ROOT = Path(__file__).resolve().parent.parent
 def data(src: str, dest: str) -> str:
     return f"{ROOT / src}{os.pathsep}{dest}"
 
+
+# Bake the build number into the exe so it can tell when a newer one is published.
+# CI sets BUILD_NUMBER (the workflow run number) and BUILD_SHA; local builds are build 0.
+build = {
+    "number": int(os.environ.get("BUILD_NUMBER", "0")),
+    "sha": os.environ.get("BUILD_SHA", "local"),
+    "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+}
+(ROOT / "hub" / "_build.py").write_text(f"BUILD = {build!r}\n", encoding="utf-8")
+print(f"Building SmartHome build {build['number']} ({build['sha'][:7]})")
 
 args = [
     str(ROOT / "packaging" / "launch.py"),

@@ -47,6 +47,24 @@ Windows may warn the first time ("Windows protected your PC") because the exe is
 code-signed. Choose **More info → Run anyway**. Windows Firewall may also ask to allow
 network access. Allow it on private networks so other devices can reach the dashboard.
 
+### Automatic updates
+
+SmartHome.exe keeps itself up to date. Every few hours it checks the `exe-latest` release.
+When a newer build is published, it does the following:
+
+1. Downloads the new build and checks it's complete and uncorrupted (size and SHA-256).
+2. Runs the new build once to make sure it starts.
+3. Waits until no routine is mid-run, so a sunrise fade is never cut short.
+4. Swaps the new exe in and restarts it. The SmartHome window closes and a new one opens.
+   An open dashboard reloads itself and shows "Updated to build N".
+
+Your `config.yaml`, routines and sign-ins are kept. **Settings → Updates** shows your build,
+lets you check now or update now, and has an **Automatic** switch. With it off, the hub only
+tells you when an update is available.
+
+Each build is tested on Windows before it's published: the tests run, the exe is launched,
+and an older build is updated to the new one. Running from source, update with `git pull`.
+
 To build the exe yourself on Windows, run `pip install -e ".[all,exe]"` and then
 `python packaging/build_exe.py`. The exe is written to `dist\SmartHome.exe`.
 
@@ -333,6 +351,7 @@ The dashboard is a client of a small JSON API, which you can also script against
 | `GET /api/status` | time, sun times, location, integration health, rooms |
 | `GET /api/weather`, `POST /api/weather/refresh` | current weather and forecast |
 | `POST /api/auto/explain` | what an automatic routine would do right now |
+| `GET /api/update`, `POST /api/update/check`, `/install`, `/settings` | the exe's self-updater |
 | `GET /api/devices` | all devices |
 | `POST /api/devices/{id}/state` | `{"on": true, "brightness": 40}` |
 | `POST /api/devices/{id}/command` | `{"command": "start"}` |

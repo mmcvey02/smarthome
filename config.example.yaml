@@ -15,6 +15,11 @@ weather:
   enabled: true
   refresh_minutes: 15
 
+# SmartHome.exe updates itself (see README). You can also switch this in Settings.
+# updates:
+#   auto: true
+#   check_hours: 6
+
 # Optional: require this password (any username) to open the dashboard.
 # Recommended if anyone else uses your network.
 # password: "change-me"

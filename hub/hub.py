@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -23,6 +23,9 @@ from .routines.engine import RoutineEngine, target_matches
 from .routines.models import Target
 from .routines.timespec import Clock, Location
 from .weather import WeatherService, detect_location
+
+if TYPE_CHECKING:
+    from .updater import Updater
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ class Hub:
         self._listeners: list[Callable[[Device], None]] = []
         self._poll_tasks: list[asyncio.Task[None]] = []
         self.routines = RoutineEngine(self, data_dir / "routines.json")
+        self.updater: Updater | None = None  # set by the exe launcher
 
     def _set_location(self, loc: dict[str, Any]) -> None:
         tz = ZoneInfo(loc.get("timezone") or self.config.get("timezone") or "UTC")
